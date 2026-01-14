@@ -169,92 +169,96 @@ func handleConn(nConn net.Conn, config *ssh.ServerConfig) {
 
 	go ssh.DiscardRequests(reqs)
 
-	for ch := range chans {
-		if ch.ChannelType() != "session" {
-			ch.Reject(ssh.UnknownChannelType, "")
-			continue
-		}
-
-		srcChannel, srcRequests, _ := ch.Accept()
-		dstSession, err := targetClient.NewSession()
-		if err != nil {
-			srcChannel.Close()
-			continue
-		}
-
-		go func() {
-			for req := range srcRequests {
-				switch req.Type {
-
-				case "pty-req":
-					dstSession.RequestPty("xterm-256color", 40, 120, ssh.TerminalModes{})
-					req.Reply(true, nil)
-
-				case "shell":
-					//dstSession.Stdin = srcChannel
-					//dstSession.Stdout = srcChannel
-					//dstSession.Stderr = srcChannel
-					dstSession.Stdout = &activityWriter{rw: srcChannel, session: sess}
-					dstSession.Stderr = &activityWriter{rw: srcChannel, session: sess}
-					dstSession.Stdin = &activityWriter{rw: srcChannel, session: sess}
-
-					dstSession.Shell()
-					go func() {
-						err := dstSession.Wait()
-						log.Println("target session exited:", err)
-						sess.Cancel()
-					}()
-					req.Reply(true, nil)
-
-				case "subsystem":
-					//if string(req.Payload[4:]) == "sftp" {
-					//	//dstSession.Stdin = srcChannel
-					//	//dstSession.Stdout = srcChannel
-					//	//dstSession.Stderr = srcChannel
-					//	dstSession.Stdout = &activityWriter{rw: srcChannel, session: sess}
-					//	dstSession.Stderr = &activityWriter{rw: srcChannel, session: sess}
-					//	dstSession.Stdin = &activityWriter{rw: srcChannel, session: sess}
-					//
-					//	err = dstSession.RequestSubsystem("sftp")
-					//	if err != nil {
-					//		req.Reply(false, nil)
-					//	} else {
-					//		req.Reply(true, nil)
-					//	}
-					//} else {
-					//	req.Reply(false, nil)
-					//}
-
-					//if string(req.Payload[4:]) == "sftp" {
-					//	log.Println("starting sftp subsystem")
-					//	req.Reply(true, nil)
-					//
-					//	startSFTPServer(srcChannel, targetClient)
-					//	return
-					//}
-					//req.Reply(false, nil)
-					if string(req.Payload[4:]) == "sftp" {
-						req.Reply(true, nil)
-						startSFTPServer(srcChannel, targetClient, targetName)
-						return
-					}
-				}
-			}
-		}()
-
-		go monitorSession(sess)
-
-		//go func() {
-		//	select {
-		//	case <-sess.Ctx.Done():
-		//		srcChannel.Close()
-		//		dstSession.Close()
-		//	}
-		//}()
-		<-sess.Ctx.Done()
-		srcChannel.Close()
-		dstSession.Close()
+	//for ch := range chans {
+	//	if ch.ChannelType() != "session" {
+	//		ch.Reject(ssh.UnknownChannelType, "")
+	//		continue
+	//	}
+	//
+	//	srcChannel, srcRequests, _ := ch.Accept()
+	//	dstSession, err := targetClient.NewSession()
+	//	if err != nil {
+	//		srcChannel.Close()
+	//		continue
+	//	}
+	//
+	//	go func() {
+	//		for req := range srcRequests {
+	//			switch req.Type {
+	//
+	//			case "pty-req":
+	//				dstSession.RequestPty("xterm-256color", 40, 120, ssh.TerminalModes{})
+	//				req.Reply(true, nil)
+	//
+	//			case "shell":
+	//				//dstSession.Stdin = srcChannel
+	//				//dstSession.Stdout = srcChannel
+	//				//dstSession.Stderr = srcChannel
+	//				dstSession.Stdout = &activityWriter{rw: srcChannel, session: sess}
+	//				dstSession.Stderr = &activityWriter{rw: srcChannel, session: sess}
+	//				dstSession.Stdin = &activityWriter{rw: srcChannel, session: sess}
+	//
+	//				dstSession.Shell()
+	//				go func() {
+	//					err := dstSession.Wait()
+	//					log.Println("target session exited:", err)
+	//					sess.Cancel()
+	//				}()
+	//				req.Reply(true, nil)
+	//
+	//			case "subsystem":
+	//				//if string(req.Payload[4:]) == "sftp" {
+	//				//	//dstSession.Stdin = srcChannel
+	//				//	//dstSession.Stdout = srcChannel
+	//				//	//dstSession.Stderr = srcChannel
+	//				//	dstSession.Stdout = &activityWriter{rw: srcChannel, session: sess}
+	//				//	dstSession.Stderr = &activityWriter{rw: srcChannel, session: sess}
+	//				//	dstSession.Stdin = &activityWriter{rw: srcChannel, session: sess}
+	//				//
+	//				//	err = dstSession.RequestSubsystem("sftp")
+	//				//	if err != nil {
+	//				//		req.Reply(false, nil)
+	//				//	} else {
+	//				//		req.Reply(true, nil)
+	//				//	}
+	//				//} else {
+	//				//	req.Reply(false, nil)
+	//				//}
+	//
+	//				//if string(req.Payload[4:]) == "sftp" {
+	//				//	log.Println("starting sftp subsystem")
+	//				//	req.Reply(true, nil)
+	//				//
+	//				//	startSFTPServer(srcChannel, targetClient)
+	//				//	return
+	//				//}
+	//				//req.Reply(false, nil)
+	//				if string(req.Payload[4:]) == "sftp" {
+	//					req.Reply(true, nil)
+	//					startSFTPServer(srcChannel, targetClient, targetName)
+	//					return
+	//				}
+	//			}
+	//		}
+	//	}()
+	//
+	//	go monitorSession(sess)
+	//
+	//	//go func() {
+	//	//	select {
+	//	//	case <-sess.Ctx.Done():
+	//	//		srcChannel.Close()
+	//	//		dstSession.Close()
+	//	//	}
+	//	//}()
+	//	<-sess.Ctx.Done()
+	//	srcChannel.Close()
+	//	dstSession.Close()
+	//}
+	for newCh := range chans {
+		go handleNewChannel(newCh, targetClient, sess)
 	}
+
 }
 
 //func connectTarget(targetName string) (*ssh.Client, error) {
@@ -507,4 +511,72 @@ func startSFTPServer(
 	if err := server.Serve(); err != nil && err != io.EOF {
 		log.Println("sftp serve error:", err)
 	}
+}
+
+func handleNewChannel(
+	newChannel ssh.NewChannel,
+	targetClient *ssh.Client,
+	sess *Session,
+) {
+	if newChannel.ChannelType() != "session" {
+		newChannel.Reject(ssh.UnknownChannelType, "unsupported channel")
+		return
+	}
+
+	// 接受源 channel
+	srcChannel, srcRequests, err := newChannel.Accept()
+	if err != nil {
+		log.Println("failed to accept channel:", err)
+		return
+	}
+
+	// 每个源 channel 对应独立 dstSession （关键！支持 clone）
+	dstSession, err := targetClient.NewSession()
+	if err != nil {
+		log.Println("failed to create target session:", err)
+		srcChannel.Close()
+		return
+	}
+
+	// 会话关闭时的清理
+	go func() {
+		<-sess.Ctx.Done()
+		srcChannel.Close()
+		dstSession.Close()
+	}()
+
+	go func() {
+		for req := range srcRequests {
+
+			switch req.Type {
+
+			case "pty-req":
+				dstSession.RequestPty("xterm-256color", 40, 120, ssh.TerminalModes{})
+				req.Reply(true, nil)
+
+			case "shell":
+				dstSession.Stdout = &activityWriter{rw: srcChannel, session: sess}
+				dstSession.Stderr = &activityWriter{rw: srcChannel, session: sess}
+				dstSession.Stdin = &activityWriter{rw: srcChannel, session: sess}
+
+				dstSession.Shell()
+
+				go func() {
+					err := dstSession.Wait()
+					log.Println("target session exited:", err)
+					sess.Cancel()
+				}()
+
+				req.Reply(true, nil)
+
+			case "subsystem":
+				if string(req.Payload[4:]) == "sftp" {
+					req.Reply(true, nil)
+					startSFTPServer(srcChannel, targetClient, sess.Target)
+					return
+				}
+				req.Reply(false, nil)
+			}
+		}
+	}()
 }
