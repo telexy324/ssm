@@ -225,7 +225,7 @@ func monitorSession(sess *Session) {
 			// 最大会话时长
 			if now.Sub(sess.StartedAt) > maxSessionTime {
 				log.Println("session max time reached:", sess.ID)
-				sess.Cancel()
+				sess.End()
 				return
 			}
 
@@ -233,7 +233,7 @@ func monitorSession(sess *Session) {
 			last := time.Unix(sess.LastActiveAt.Load(), 0)
 			if now.Sub(last) > idleTimeout {
 				log.Println("session idle timeout:", sess.ID)
-				sess.Cancel()
+				sess.End()
 				return
 			}
 		}
