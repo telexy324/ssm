@@ -21,11 +21,14 @@ type Session struct {
 	ID           string
 	User         string
 	Target       string
+	Parent       *Session // null for parent
 	StartedAt    time.Time
 	LastActiveAt atomic.Int64
 
 	Ctx    context.Context
 	Cancel context.CancelFunc
+
+	children sync.Map // childID -> *Session
 }
 
 type activityWriter struct {
@@ -33,21 +36,11 @@ type activityWriter struct {
 	session *Session
 }
 
-//func (a *activityWriter) Write(p []byte) (int, error) {
-//	a.session.LastActiveAt.Store(time.Now().Unix())
-//	return a.rw.Write(p)
-//}
-//
-//func (a *activityWriter) Read(p []byte) (int, error) {
-//	a.session.LastActiveAt.Store(time.Now().Unix())
-//	return a.rw.Read(p)
-//}
-
 func (a *activityWriter) Write(p []byte) (int, error) {
 	n, err := a.rw.Write(p)
 	a.session.LastActiveAt.Store(time.Now().Unix())
 	if err != nil {
-		a.session.Cancel()
+		a.session.End()
 	}
 	return n, err
 }
@@ -56,7 +49,7 @@ func (a *activityWriter) Read(p []byte) (int, error) {
 	n, err := a.rw.Read(p)
 	a.session.LastActiveAt.Store(time.Now().Unix())
 	if err != nil {
-		a.session.Cancel()
+		a.session.End()
 	}
 	return n, err
 }
@@ -119,8 +112,8 @@ const (
 	maxSessionTime = 2 * time.Hour
 )
 
-var targetPool sync.Map // map[string]*ssh.Client
-var sftpPool sync.Map   // key: targetName, value: *sftp.Client
+//var targetPool sync.Map // map[string]*ssh.Client
+//var sftpPool sync.Map   // key: targetName, value: *sftp.Client
 
 func main() {
 	// 1. SSH Server 配置
@@ -157,7 +150,7 @@ func handleConn(nConn net.Conn, config *ssh.ServerConfig) {
 	defer sshConn.Close()
 
 	targetName := sshConn.User()
-	sess := newSession("", targetName)
+	parent := newParentSession("", targetName)
 
 	// 3. 连接目标服务器
 	targetClient, err := connectTarget(targetName)
@@ -169,138 +162,14 @@ func handleConn(nConn net.Conn, config *ssh.ServerConfig) {
 
 	go ssh.DiscardRequests(reqs)
 
-	//for ch := range chans {
-	//	if ch.ChannelType() != "session" {
-	//		ch.Reject(ssh.UnknownChannelType, "")
-	//		continue
-	//	}
-	//
-	//	srcChannel, srcRequests, _ := ch.Accept()
-	//	dstSession, err := targetClient.NewSession()
-	//	if err != nil {
-	//		srcChannel.Close()
-	//		continue
-	//	}
-	//
-	//	go func() {
-	//		for req := range srcRequests {
-	//			switch req.Type {
-	//
-	//			case "pty-req":
-	//				dstSession.RequestPty("xterm-256color", 40, 120, ssh.TerminalModes{})
-	//				req.Reply(true, nil)
-	//
-	//			case "shell":
-	//				//dstSession.Stdin = srcChannel
-	//				//dstSession.Stdout = srcChannel
-	//				//dstSession.Stderr = srcChannel
-	//				dstSession.Stdout = &activityWriter{rw: srcChannel, session: sess}
-	//				dstSession.Stderr = &activityWriter{rw: srcChannel, session: sess}
-	//				dstSession.Stdin = &activityWriter{rw: srcChannel, session: sess}
-	//
-	//				dstSession.Shell()
-	//				go func() {
-	//					err := dstSession.Wait()
-	//					log.Println("target session exited:", err)
-	//					sess.Cancel()
-	//				}()
-	//				req.Reply(true, nil)
-	//
-	//			case "subsystem":
-	//				//if string(req.Payload[4:]) == "sftp" {
-	//				//	//dstSession.Stdin = srcChannel
-	//				//	//dstSession.Stdout = srcChannel
-	//				//	//dstSession.Stderr = srcChannel
-	//				//	dstSession.Stdout = &activityWriter{rw: srcChannel, session: sess}
-	//				//	dstSession.Stderr = &activityWriter{rw: srcChannel, session: sess}
-	//				//	dstSession.Stdin = &activityWriter{rw: srcChannel, session: sess}
-	//				//
-	//				//	err = dstSession.RequestSubsystem("sftp")
-	//				//	if err != nil {
-	//				//		req.Reply(false, nil)
-	//				//	} else {
-	//				//		req.Reply(true, nil)
-	//				//	}
-	//				//} else {
-	//				//	req.Reply(false, nil)
-	//				//}
-	//
-	//				//if string(req.Payload[4:]) == "sftp" {
-	//				//	log.Println("starting sftp subsystem")
-	//				//	req.Reply(true, nil)
-	//				//
-	//				//	startSFTPServer(srcChannel, targetClient)
-	//				//	return
-	//				//}
-	//				//req.Reply(false, nil)
-	//				if string(req.Payload[4:]) == "sftp" {
-	//					req.Reply(true, nil)
-	//					startSFTPServer(srcChannel, targetClient, targetName)
-	//					return
-	//				}
-	//			}
-	//		}
-	//	}()
-	//
-	//	go monitorSession(sess)
-	//
-	//	//go func() {
-	//	//	select {
-	//	//	case <-sess.Ctx.Done():
-	//	//		srcChannel.Close()
-	//	//		dstSession.Close()
-	//	//	}
-	//	//}()
-	//	<-sess.Ctx.Done()
-	//	srcChannel.Close()
-	//	dstSession.Close()
-	//}
 	for newCh := range chans {
-		go handleNewChannel(newCh, targetClient, sess)
+		child := parent.NewChild()
+		go handleNewChannel(newCh, targetClient, child)
 	}
 
 }
 
-//func connectTarget(targetName string) (*ssh.Client, error) {
-//	homePath, err := os.UserHomeDir()
-//	if err != nil {
-//		return nil, err
-//	}
-//	key, err := os.ReadFile(path.Join(homePath, ".ssh", "id_rsa"))
-//	if err != nil {
-//		return nil, err
-//	}
-//	signer, err := ssh.ParsePrivateKey(key)
-//	if err != nil {
-//		return nil, err
-//	}
-//
-//	cfg := &ssh.ClientConfig{
-//		User:            "root",
-//		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
-//		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-//	}
-//	addr := fmt.Sprintf("%s:%d", targetName, 1122)
-//	return ssh.Dial("tcp", addr, cfg)
-//}
-
 func connectTarget(targetName string) (*ssh.Client, error) {
-	// 🍀 尝试复用
-	if val, ok := targetPool.Load(targetName); ok {
-		client := val.(*ssh.Client)
-		// 测试是否还活着
-		_, _, err := client.SendRequest("keepalive@golang.org", true, nil)
-		if err == nil {
-			log.Println("[reuse] reuse ssh client for", targetName)
-			return client, nil
-		}
-
-		// 已失效，关闭并删掉
-		client.Close()
-		targetPool.Delete(targetName)
-	}
-
-	// 🍀 建立新连接
 	homePath, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
@@ -322,19 +191,11 @@ func connectTarget(targetName string) (*ssh.Client, error) {
 	}
 
 	addr := fmt.Sprintf("%s:%d", targetName, 1122)
-	client, err := ssh.Dial("tcp", addr, cfg)
-	if err != nil {
-		return nil, err
-	}
 
-	// 🍀 放入复用池
-	targetPool.Store(targetName, client)
-	log.Println("[new] new ssh client connected:", targetName)
-
-	return client, nil
+	return ssh.Dial("tcp", addr, cfg)
 }
 
-func newSession(user, target string) *Session {
+func newParentSession(user, target string) *Session {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	s := &Session{
@@ -379,114 +240,36 @@ func monitorSession(sess *Session) {
 	}
 }
 
-//func startSFTPServer(channel ssh.Channel) {
-//	defer channel.Close()
-//
-//	server, err := sftp.NewServer(
-//		channel,
-//		sftp.WithDebug(os.Stdout), // 可以先开 debug
-//	)
-//	if err != nil {
-//		log.Println("sftp server init error:", err)
-//		return
-//	}
-//
-//	if err := server.Serve(); err != nil {
-//		if err != io.EOF {
-//			log.Println("sftp server error:", err)
-//		}
-//	}
-//
-//	log.Println("sftp session closed")
-//}
-
-//func startSFTPServer(
-//	channel ssh.Channel,
-//	targetClient *ssh.Client,
-//) {
-//	defer channel.Close()
-//	defer targetClient.Close() // ★关键★
-//
-//	server, err := sftp.NewServer(channel)
-//	if err != nil {
-//		return
-//	}
-//
-//	err = server.Serve()
-//	if err == io.EOF {
-//		// 正常关闭
-//	} else if err != nil {
-//		log.Println("sftp error:", err)
-//	}
-//}
-
-//func startSFTPServer(
-//	channel ssh.Channel,
-//	targetClient *ssh.Client,
-//) {
-//	defer channel.Close()
-//	defer targetClient.Close()
-//
-//	targetSftp, err := sftp.NewClient(targetClient)
-//	if err != nil {
-//		log.Println("create target sftp client failed:", err)
-//		return
-//	}
-//	defer targetSftp.Close()
-//
-//	handler := &ProxySFTPHandler{
-//		client: targetSftp,
-//	}
-//
-//	server := sftp.NewRequestServer(
-//		channel,
-//		sftp.Handlers{
-//			FileGet:  handler,
-//			FilePut:  handler,
-//			FileCmd:  handler,
-//			FileList: handler,
-//		},
-//	)
-//
-//	log.Println("sftp proxy started")
-//
-//	if err := server.Serve(); err != nil && err != io.EOF {
-//		log.Println("sftp serve error:", err)
-//	}
-//
-//	log.Println("sftp proxy closed")
-//}
-
 func getSftpClient(targetName string, targetClient *ssh.Client) (*sftp.Client, error) {
-	if val, ok := sftpPool.Load(targetName); ok {
-		cli := val.(*sftp.Client)
-		// 测试是否存活
-		_, err := cli.ReadDir("/")
-		if err == nil {
-			return cli, nil
-		}
-
-		cli.Close()
-		sftpPool.Delete(targetName)
-	}
+	//if val, ok := sftpPool.Load(targetName); ok {
+	//	cli := val.(*sftp.Client)
+	//	// 测试是否存活
+	//	_, err := cli.ReadDir("/")
+	//	if err == nil {
+	//		return cli, nil
+	//	}
+	//
+	//	cli.Close()
+	//	sftpPool.Delete(targetName)
+	//}
 
 	cli, err := sftp.NewClient(targetClient)
 	if err != nil {
 		return nil, err
 	}
 
-	sftpPool.Store(targetName, cli)
+	//sftpPool.Store(targetName, cli)
 	return cli, nil
 }
 
 func startSFTPServer(
 	channel ssh.Channel,
 	targetClient *ssh.Client,
-	targetName string,
+	sess *Session,
 ) {
 	defer channel.Close()
 
-	targetSftp, err := getSftpClient(targetName, targetClient)
+	targetSftp, err := getSftpClient(sess.Target, targetClient)
 	if err != nil {
 		log.Println("create target sftp client failed:", err)
 		return
@@ -506,11 +289,12 @@ func startSFTPServer(
 		},
 	)
 
-	log.Println("sftp proxy started for", targetName)
+	log.Println("sftp proxy started for", sess.Target)
 
 	if err := server.Serve(); err != nil && err != io.EOF {
 		log.Println("sftp serve error:", err)
 	}
+	sess.End()
 }
 
 func handleNewChannel(
@@ -564,7 +348,7 @@ func handleNewChannel(
 				go func() {
 					err := dstSession.Wait()
 					log.Println("target session exited:", err)
-					sess.Cancel()
+					sess.End()
 				}()
 
 				req.Reply(true, nil)
@@ -572,11 +356,52 @@ func handleNewChannel(
 			case "subsystem":
 				if string(req.Payload[4:]) == "sftp" {
 					req.Reply(true, nil)
-					startSFTPServer(srcChannel, targetClient, sess.Target)
+					startSFTPServer(srcChannel, targetClient, sess)
 					return
 				}
 				req.Reply(false, nil)
 			}
 		}
 	}()
+	go monitorSession(sess)
+}
+
+func (s *Session) NewChild() *Session {
+	ctx, cancel := context.WithCancel(s.Ctx)
+
+	child := &Session{
+		ID:        uuid.NewString(),
+		User:      s.User,
+		Target:    s.Target,
+		StartedAt: time.Now(),
+		Ctx:       ctx,
+		Cancel:    cancel,
+		Parent:    s,
+	}
+
+	child.LastActiveAt.Store(time.Now().Unix())
+	s.children.Store(child.ID, child)
+	return child
+}
+
+func (s *Session) RemoveChild(id string) {
+	s.children.Delete(id)
+	// 只有父会话在没有 child 时才退出
+	if s.Parent == nil {
+		empty := true
+		s.children.Range(func(_, _ any) bool {
+			empty = false
+			return false
+		})
+		if empty {
+			s.Cancel()
+		}
+	}
+}
+
+func (s *Session) End() {
+	if s.Parent != nil {
+		s.Parent.RemoveChild(s.ID)
+	}
+	s.Cancel()
 }
