@@ -117,7 +117,11 @@ const (
 
 func main() {
 	// 1. SSH Server 配置
-	privateBytes, err := os.ReadFile("server_host_key")
+	homePath, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatal(err)
+	}
+	privateBytes, err := os.ReadFile(path.Join(homePath, ".ssh", "id_rsa"))
 	if err != nil {
 		log.Fatal(err)
 	}
