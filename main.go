@@ -339,7 +339,7 @@ func handleNewChannel(
 			switch req.Type {
 
 			case "pty-req":
-				dstSession.RequestPty("xterm-256color", 40, 120, ssh.TerminalModes{})
+				dstSession.SendRequest("pty-req", true, req.Payload)
 				req.Reply(true, nil)
 
 			case "shell":
@@ -363,6 +363,9 @@ func handleNewChannel(
 					startSFTPServer(srcChannel, targetClient, sess)
 					return
 				}
+				req.Reply(false, nil)
+			default:
+				log.Println(req.Type)
 				req.Reply(false, nil)
 			}
 		}
